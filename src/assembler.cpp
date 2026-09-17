@@ -1,40 +1,202 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <map>
+#include <vector>
 #include "../inc/asm_types.h"
+#include "../inc/assembler_internal.hpp"
+#include "../inc/symbol_table.hpp"
+#include "../inc/relocation_table.hpp"
+#include "../inc/opcodes.hpp"
+#include "../inc/registers.hpp"
 
 extern int yyparse(void);
 extern FILE *yyin;
 
+std::map <std::string, Section> sections;
+Section *current_section = nullptr;
+
+DirectiveKind current_directive;
+
+SymbolTable symbol_table;
+RelocationTable relocation_table;
+
 void asm_define_label(const char *name) {
+    if (!current_section) {
+        fprintf(stderr, "Error: label defined outside of any section: %s\n", name);
+        exit(1);
+    }
+    if (symbol_table.checkSymbolDefinition(name)) {
+        fprintf(stderr, "Error: multiple label definitions: %s\n", name);
+        exit(1);
+    }
+    if (symbol_table.isDeclaredExtern(name)) {
+        fprintf(stderr, "Error: cannot define symbol declared extern: %s\n", name);
+        exit(1);
+    }
+
+    int section_index = symbol_table.getSectionIndex(current_section->getName());
+    if (section_index == -1) {
+        fprintf(stderr, "Error: current section not found in symbol table: %s\n", current_section->getName().c_str());
+        exit(1);
+    }
+    if (!symbol_table.checkEntry(name)) {
+        symbol_table.addEntry( SymbolTableEntry{
+            current_section->getLocationCounter(), // value will be set later
+            name,
+            section_index,
+            LOCAL,
+            NOTYP,
+            true, // defined
+            {}
+        });
+    }
+    else {
+        symbol_table.defineSymbol(name, section_index, current_section->getLocationCounter());
+    }
+
+
     printf("LABEL: %s\n", name);
 }
 
 void asm_directive_begin(DirectiveKind kind) {
+    current_directive = kind;
     printf("DIRECTIVE BEGIN: %d\n", (int)kind);
 }
 
 void asm_directive_symbol(const char *name) {
+    LocalityKind locality;
+    if (current_directive == DIRECTIVE_GLOBAL) {
+        locality = GLOBAL;
+    }
+    else if (current_directive == DIRECTIVE_EXTERN) {
+        locality = EXTERN;
+    }
+    else {
+        fprintf(stderr, "Error: unexpected symbol in directive: %s\n", name);
+        exit(1);
+    }
+
+    if (!symbol_table.checkEntry(name)) {
+        symbol_table.addEntry(SymbolTableEntry{
+            0,
+            name,
+            -1,
+            locality,
+            NOTYP,
+            false,
+            {}
+        });
+    }
+    else {
+        symbol_table.setLocality(name, locality);
+    }
     printf("  SYMBOL: %s\n", name);
 }
 
 void asm_directive_section(const char *name) {
+    symbol_table.addEntry(SymbolTableEntry{
+        0, // value will be set later
+        name,
+        -1, // section index will be set later
+        LOCAL,
+        SCTN,
+        true, // defined
+        {}
+    });
+    auto result = sections.emplace(name, Section(name));
+    current_section = &result.first->second;
     printf("SECTION: %s\n", name);
 }
 
 void asm_directive_word_literal(long value) {
+    if (!current_section) {
+        fprintf(stderr, "Error: .word outside of any section\n");
+        exit(1);
+    }
+
+    current_section->appendBytes(value, 4);
+
     printf("  WORD LITERAL: %ld\n", value);
 }
 
 void asm_directive_word_symbol(const char *name) {
+    if (!current_section) {
+        fprintf(stderr, "Error: .word outside of any section\n");
+        exit(1);
+    }
+
+    if (!symbol_table.checkEntry(name)) {
+        symbol_table.addEntry(SymbolTableEntry{
+            0,          // value unknown until defined
+            name,
+            -1,         // section unknown until defined
+            LOCAL,
+            NOTYP,
+            false,      // not defined yet
+            {}
+        });
+    }
+
+    int section_index = symbol_table.getSectionIndex(current_section->getName());
+    relocation_table.addEntry(RelocationEntry{
+        current_section->getLocationCounter(),
+        section_index,
+        name
+    });
+
+    current_section->appendBytes(0, 4);
+
     printf("  WORD SYMBOL: %s\n", name);
 }
 
 void asm_directive_skip(long size) {
+    if (!current_section) {
+        fprintf(stderr, "Error: .skip outside of any section\n");
+        exit(1);
+    }
+    if (size < 0) {
+        fprintf(stderr, "Error: .skip size must be non-negative: %ld\n", size);
+        exit(1);
+    }
+
+    current_section->appendBytes(0, size);
+
     printf("SKIP: %ld\n", size);
 }
 
 void asm_directive_ascii(const char *literal_with_quotes) {
+    if (!current_section) {
+        fprintf(stderr, "Error: .ascii outside of any section\n");
+        exit(1);
+    }
+
+    size_t len = strlen(literal_with_quotes);
+    if (len < 2 || literal_with_quotes[0] != '"' || literal_with_quotes[len - 1] != '"') {
+        fprintf(stderr, "Error: malformed .ascii string literal: %s\n", literal_with_quotes);
+        exit(1);
+    }
+
+    for (size_t i = 1; i < len - 1; i++) {
+        char c = literal_with_quotes[i];
+
+        if (c == '\\' && i + 1 < len - 1) {
+            i++;
+            switch (literal_with_quotes[i]) {
+                case 'n':  c = '\n'; break;
+                case 't':  c = '\t'; break;
+                case 'r':  c = '\r'; break;
+                case '0':  c = '\0'; break;
+                case '\\': c = '\\'; break;
+                case '"':  c = '"';  break;
+                default:   c = literal_with_quotes[i]; break;
+            }
+        }
+
+        current_section->appendBytes((unsigned char)c, 1);
+    }
+
     printf("ASCII: %s\n", literal_with_quotes);
 }
 
@@ -157,8 +319,55 @@ static void print_operand(const Operand *o) {
     }
 }
 
+static void require_section(OpCode op) {
+    if (!current_section) {
+        fprintf(stderr, "Error: instruction outside of any section: %s\n", op_name(op));
+        exit(1);
+    }
+}
+
+static void emit_halt() {
+    require_section(OPC_HALT);
+    current_section->appendInstruction(OC_HALT, 0x0, 0, 0, 0, 0);
+    printf("INSTR: %s\n", op_name(OPC_HALT));
+}
+
+static void emit_int() {
+    require_section(OPC_INT);
+    current_section->appendInstruction(OC_INT, 0x0, 0, 0, 0, 0);
+    printf("INSTR: %s\n", op_name(OPC_INT));
+}
+
+// iret = pop pc; pop status (spec wording, matching push order: status
+// pushed first, pc pushed last so pc sits on top of stack). Can't be two
+// plain postinc pops in that order though: popping pc first would hand
+// control to the restored address before the status pop ever executed.
+// So status is read non-destructively from [sp+4] first (leaving sp
+// untouched), and pc is popped last via postinc with D=8, which both
+// reads the correct [sp] value and accounts for both words' worth of
+// stack space in one go.
+static void emit_iret() {
+    require_section(OPC_IRET);
+    current_section->appendInstruction(OC_LOAD, MOD_LOAD_CSRRD_MEM, CSR_STATUS, REG_SP, 0, 4);
+    current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM_POSTINC, REG_PC, REG_SP, 0, 8);
+    printf("INSTR: %s\n", op_name(OPC_IRET));
+}
+
+// ret = pop pc: gpr[pc] <= mem32[sp]; sp <= sp + 4 (load, ld-mem-postinc).
+static void emit_ret() {
+    require_section(OPC_RET);
+    current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM_POSTINC, REG_PC, REG_SP, 0, 4);
+    printf("INSTR: %s\n", op_name(OPC_RET));
+}
+
 void asm_instr_no_operand(OpCode op) {
-    printf("INSTR: %s\n", op_name(op));
+    switch (op) {
+        case OPC_HALT: emit_halt(); break;
+        case OPC_INT:  emit_int();  break;
+        case OPC_IRET: emit_iret(); break;
+        case OPC_RET:  emit_ret();  break;
+        default:       printf("INSTR: %s\n", op_name(op)); break;
+    }
 }
 void asm_instr_jump(OpCode op, Operand *target) {
     printf("INSTR: %s ", op_name(op));
@@ -198,6 +407,7 @@ void asm_instr_csrwr(long gpr, long csr) {
 }
 
 int main(int argc, char **argv) {
+
     if (argc > 1) {
         yyin = fopen(argv[1], "r");
         if (!yyin) {
