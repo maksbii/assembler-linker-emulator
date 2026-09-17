@@ -10,6 +10,10 @@
 #include "../inc/relocation_table.hpp"
 #include "../inc/opcodes.hpp"
 #include "../inc/registers.hpp"
+#include "../inc/instruction_common.hpp"
+#include "../inc/instruction_no_operand.hpp"
+#include "../inc/instruction_one_reg.hpp"
+#include "../inc/instruction_two_reg.hpp"
 
 extern int yyparse(void);
 extern FILE *yyin;
@@ -272,38 +276,6 @@ Operand *asm_operand_jump_symbol(const char *name) {
     return o;
 }
 
-static const char *op_name(OpCode op) {
-    switch (op) {
-        case OPC_HALT: return "halt";
-        case OPC_INT: return "int";
-        case OPC_IRET: return "iret";
-        case OPC_RET: return "ret";
-        case OPC_CALL: return "call";
-        case OPC_JMP: return "jmp";
-        case OPC_BEQ: return "beq";
-        case OPC_BNE: return "bne";
-        case OPC_BGT: return "bgt";
-        case OPC_PUSH: return "push";
-        case OPC_POP: return "pop";
-        case OPC_NOT: return "not";
-        case OPC_XCHG: return "xchg";
-        case OPC_ADD: return "add";
-        case OPC_SUB: return "sub";
-        case OPC_MUL: return "mul";
-        case OPC_DIV: return "div";
-        case OPC_AND: return "and";
-        case OPC_OR: return "or";
-        case OPC_XOR: return "xor";
-        case OPC_SHL: return "shl";
-        case OPC_SHR: return "shr";
-        case OPC_LD: return "ld";
-        case OPC_ST: return "st";
-        case OPC_CSRRD: return "csrrd";
-        case OPC_CSRWR: return "csrwr";
-    }
-    return "?";
-}
-
 static void print_operand(const Operand *o) {
     switch (o->kind) {
         case OPERAND_IMM_LIT: printf("$%ld", o->literal); break;
@@ -317,47 +289,6 @@ static void print_operand(const Operand *o) {
         case OPERAND_JUMP_LIT: printf("%ld", o->literal); break;
         case OPERAND_JUMP_SYM: printf("%s", o->symbol); break;
     }
-}
-
-static void require_section(OpCode op) {
-    if (!current_section) {
-        fprintf(stderr, "Error: instruction outside of any section: %s\n", op_name(op));
-        exit(1);
-    }
-}
-
-static void emit_halt() {
-    require_section(OPC_HALT);
-    current_section->appendInstruction(OC_HALT, 0x0, 0, 0, 0, 0);
-    printf("INSTR: %s\n", op_name(OPC_HALT));
-}
-
-static void emit_int() {
-    require_section(OPC_INT);
-    current_section->appendInstruction(OC_INT, 0x0, 0, 0, 0, 0);
-    printf("INSTR: %s\n", op_name(OPC_INT));
-}
-
-// iret = pop pc; pop status (spec wording, matching push order: status
-// pushed first, pc pushed last so pc sits on top of stack). Can't be two
-// plain postinc pops in that order though: popping pc first would hand
-// control to the restored address before the status pop ever executed.
-// So status is read non-destructively from [sp+4] first (leaving sp
-// untouched), and pc is popped last via postinc with D=8, which both
-// reads the correct [sp] value and accounts for both words' worth of
-// stack space in one go.
-static void emit_iret() {
-    require_section(OPC_IRET);
-    current_section->appendInstruction(OC_LOAD, MOD_LOAD_CSRRD_MEM, CSR_STATUS, REG_SP, 0, 4);
-    current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM_POSTINC, REG_PC, REG_SP, 0, 8);
-    printf("INSTR: %s\n", op_name(OPC_IRET));
-}
-
-// ret = pop pc: gpr[pc] <= mem32[sp]; sp <= sp + 4 (load, ld-mem-postinc).
-static void emit_ret() {
-    require_section(OPC_RET);
-    current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM_POSTINC, REG_PC, REG_SP, 0, 4);
-    printf("INSTR: %s\n", op_name(OPC_RET));
 }
 
 void asm_instr_no_operand(OpCode op) {
@@ -382,10 +313,27 @@ void asm_instr_branch(OpCode op, long gpr1, long gpr2, Operand *target) {
     free(target);
 }
 void asm_instr_one_reg(OpCode op, long gpr) {
-    printf("INSTR: %s %%r%ld\n", op_name(op), gpr);
+    switch (op) {
+        case OPC_PUSH: emit_push(gpr); break;
+        case OPC_POP:  emit_pop(gpr);  break;
+        case OPC_NOT:  emit_not(gpr);  break;
+        default: printf("INSTR: %s %%r%ld\n", op_name(op), gpr); break;
+    }
 }
 void asm_instr_two_reg(OpCode op, long gprS, long gprD) {
-    printf("INSTR: %s %%r%ld, %%r%ld\n", op_name(op), gprS, gprD);
+    switch (op) {
+        case OPC_ADD:  emit_add(gprS, gprD);  break;
+        case OPC_SUB:  emit_sub(gprS, gprD);  break;
+        case OPC_MUL:  emit_mul(gprS, gprD);  break;
+        case OPC_DIV:  emit_div(gprS, gprD);  break;
+        case OPC_XCHG: emit_xchg(gprS, gprD); break;
+        case OPC_AND:  emit_and(gprS, gprD);  break;
+        case OPC_OR:   emit_or(gprS, gprD);   break;
+        case OPC_XOR:  emit_xor(gprS, gprD);  break;
+        case OPC_SHL:  emit_shl(gprS, gprD);  break;
+        case OPC_SHR:  emit_shr(gprS, gprD);  break;
+        default: printf("INSTR: %s %%r%ld, %%r%ld\n", op_name(op), gprS, gprD); break;
+    }
 }
 void asm_instr_ld(Operand *src, long gprD) {
     printf("INSTR: ld ");
