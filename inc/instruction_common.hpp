@@ -51,4 +51,9 @@ inline void require_section(OpCode op) {
     }
 }
 
+// The Disp field is 12 bits, signed.
+inline bool fits_signed12(long value) {
+    return value >= -2048 && value <= 2047;
+}
+
 #endif /* INSTRUCTION_COMMON_HPP */

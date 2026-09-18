@@ -14,6 +14,7 @@
 #include "../inc/instruction_no_operand.hpp"
 #include "../inc/instruction_one_reg.hpp"
 #include "../inc/instruction_two_reg.hpp"
+#include "../inc/instruction_ld.hpp"
 
 extern int yyparse(void);
 extern FILE *yyin;
@@ -100,6 +101,11 @@ void asm_directive_symbol(const char *name) {
 }
 
 void asm_directive_section(const char *name) {
+    if (current_section) {
+        int prev_index = symbol_table.getSectionIndex(current_section->getName());
+        current_section->flushLiteralPool(relocation_table, prev_index);
+    }
+
     symbol_table.addEntry(SymbolTableEntry{
         0, // value will be set later
         name,
@@ -209,6 +215,11 @@ void asm_directive_equ(const char *name, long value) {
 }
 
 void asm_directive_end(void) {
+    if (current_section) {
+        int section_index = symbol_table.getSectionIndex(current_section->getName());
+        current_section->flushLiteralPool(relocation_table, section_index);
+    }
+
     printf("END\n");
 }
 
@@ -336,9 +347,7 @@ void asm_instr_two_reg(OpCode op, long gprS, long gprD) {
     }
 }
 void asm_instr_ld(Operand *src, long gprD) {
-    printf("INSTR: ld ");
-    print_operand(src);
-    printf(", %%r%ld\n", gprD);
+    emit_ld(src, gprD);
     free(src);
 }
 void asm_instr_st(long gprS, Operand *dst) {

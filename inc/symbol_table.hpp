@@ -51,6 +51,19 @@ public:
         return false;
     }
 
+    // NOTYP-only, same scoping as checkEntry. Returns nullptr if the symbol
+    // has no entry yet. Lets callers read back a symbol's resolved
+    // value/sectionIndex/locality (e.g. to decide whether it's usable as an
+    // absolute displacement constant) instead of just checking booleans.
+    SymbolTableEntry *getEntry(const std::string &name) {
+        for (auto &entry : entries) {
+            if (entry.symbolName == name && entry.type == NOTYP) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
     bool isDeclaredExtern(const std::string &name) {
         for (const auto &entry : entries) {
             if (entry.symbolName == name && entry.type == NOTYP) {
