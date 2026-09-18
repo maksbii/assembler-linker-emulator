@@ -73,7 +73,7 @@ inline void emit_ld(Operand *src, long gprD) {
             if (fits_signed12(src->literal)) {
                 current_section->appendInstruction(OC_LOAD, MOD_LOAD_IMM_DISP, gprD, 0, 0, src->literal);
             } else {
-                current_section->appendPoolLiteral(OC_LOAD, MOD_LOAD_MEM, gprD, src->literal);
+                current_section->appendPoolLiteral(OC_LOAD, MOD_LOAD_MEM, gprD, REG_PC, 0, src->literal);
             }
             printf("INSTR: ld $%ld, %%r%ld\n", src->literal, gprD);
             break;
@@ -85,7 +85,7 @@ inline void emit_ld(Operand *src, long gprD) {
             if (fits_signed12(src->literal)) {
                 current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM, gprD, 0, 0, src->literal);
             } else {
-                current_section->appendPoolLiteral(OC_LOAD, MOD_LOAD_MEM, gprD, src->literal);
+                current_section->appendPoolLiteral(OC_LOAD, MOD_LOAD_MEM, gprD, REG_PC, 0, src->literal);
                 current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM, gprD, gprD, 0, 0);
             }
             printf("INSTR: ld %ld, %%r%ld\n", src->literal, gprD);
@@ -94,14 +94,14 @@ inline void emit_ld(Operand *src, long gprD) {
         // gprD <= address-of(sym): final address unknown until link time,
         // so this always needs a literal pool slot + relocation entry.
         case OPERAND_IMM_SYM:
-            current_section->appendPoolSymbol(OC_LOAD, MOD_LOAD_MEM, gprD, src->symbol);
+            current_section->appendPoolSymbol(OC_LOAD, MOD_LOAD_MEM, gprD, REG_PC, 0, src->symbol);
             printf("INSTR: ld $%s, %%r%ld\n", src->symbol, gprD);
             break;
 
         // gprD <= mem32[address-of(sym)]: literal pool + relocation for the
         // address (word 1), then dereference it (word 2).
         case OPERAND_MEM_SYM:
-            current_section->appendPoolSymbol(OC_LOAD, MOD_LOAD_MEM, gprD, src->symbol);
+            current_section->appendPoolSymbol(OC_LOAD, MOD_LOAD_MEM, gprD, REG_PC, 0, src->symbol);
             current_section->appendInstruction(OC_LOAD, MOD_LOAD_MEM, gprD, gprD, 0, 0);
             printf("INSTR: ld %s, %%r%ld\n", src->symbol, gprD);
             break;

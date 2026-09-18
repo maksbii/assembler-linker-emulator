@@ -15,6 +15,7 @@
 #include "../inc/instruction_one_reg.hpp"
 #include "../inc/instruction_two_reg.hpp"
 #include "../inc/instruction_ld.hpp"
+#include "../inc/instruction_st.hpp"
 
 extern int yyparse(void);
 extern FILE *yyin;
@@ -351,9 +352,7 @@ void asm_instr_ld(Operand *src, long gprD) {
     free(src);
 }
 void asm_instr_st(long gprS, Operand *dst) {
-    printf("INSTR: st %%r%ld, ", gprS);
-    print_operand(dst);
-    printf("\n");
+    emit_st(gprS, dst);
     free(dst);
 }
 void asm_instr_csrrd(long csr, long gpr) {
